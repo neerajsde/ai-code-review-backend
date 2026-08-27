@@ -1,78 +1,67 @@
-import { createClient } from 'redis';
-import type {RedisClientType} from 'redis'
-import { REDIS_KEYS } from '../constants/redisKeys.js';
-import { ENV } from '../config/env.js';
+import { createClient } from "redis";
+import type { RedisClientType } from "redis";
+import { ENV } from "./env.js";
+import logger from "../utils/logger.js";
 
 export type AppRedisClient = RedisClientType;
 
 const redisClient: AppRedisClient = createClient({
   socket: {
-    host: ENV.REDIS_HOST ?? '127.0.0.1',
-    port: ENV.REDIS_PORT ? Number(ENV.REDIS_PORT) : 6379,
-
-    // ✅ Correct v4 reconnect strategy
+    host: ENV.REDIS_HOST ?? "127.0.0.1",
+    port: ENV.REDIS_PORT ?? 6379,
     reconnectStrategy: (retries: number) => {
-      console.error(`🔄 Redis reconnecting... Attempt: ${retries}`);
-      return Math.min(retries * 100, 3000); // max 3s
+      logger.warn(`🔄 Redis reconnecting... Attempt: ${retries}`);
+      if (retries > 20) {
+        logger.error("❌ Redis max reconnect attempts reached");
+        return new Error("Max reconnect attempts reached");
+      }
+      return Math.min(retries * 100, 3000);
     },
   },
 });
 
-redisClient.on('connect', () => {
-  console.log('✅ Redis socket connected');
-});
-
-redisClient.on('ready', () => {
-  console.log('🚀 Redis ready to use');
-});
-
-redisClient.on('reconnecting', () => {
-  console.log('🔄 Redis reconnecting...');
-});
-
-redisClient.on('end', () => {
-  console.log('🚫 Redis connection closed');
-});
-
-redisClient.on('error', (err: Error) => {
-  console.error('❌ Redis Error:', err.message);
-});
+redisClient.on("connect", () => logger.info("✅ Redis socket connected"));
+redisClient.on("ready", () => logger.info("🚀 Redis ready to use"));
+redisClient.on("reconnecting", () => logger.warn("🔄 Redis reconnecting..."));
+redisClient.on("end", () => logger.info("🚫 Redis connection closed"));
+redisClient.on("error", (err: Error) =>
+  logger.error({ err }, "❌ Redis Error")
+);
 
 export async function connectRedis(): Promise<void> {
   if (!redisClient.isOpen) {
     try {
       await redisClient.connect();
-      console.log('🔗 Redis connection established');
+      logger.info("🔗 Redis connection established");
     } catch (error) {
-      console.error('❌ Redis connection failed:', error);
+      logger.error({ error }, "❌ Redis connection failed");
       throw error;
     }
   }
 }
 
-const shutdownRedis = async (): Promise<void> => {
+export async function disconnectRedis(): Promise<void> {
   try {
     if (redisClient.isOpen) {
       await redisClient.quit();
-      console.log('👋 Redis disconnected gracefully');
+      logger.info("👋 Redis disconnected gracefully");
     }
   } catch (error) {
-    console.error('❌ Error while disconnecting Redis:', error);
-  } finally {
-    process.exit(0);
+    logger.error({ error }, "❌ Error while disconnecting Redis");
   }
-};
+}
 
-process.on('SIGINT', shutdownRedis);
-process.on('SIGTERM', shutdownRedis);
+export function getRedisStatus(): "connected" | "disconnected" {
+  return redisClient.isReady ? "connected" : "disconnected";
+}
 
 export async function deleteByPattern(pattern: string): Promise<number> {
   if (!redisClient.isOpen) {
-    console.warn("⚠️ Redis client is not open, cannot delete by pattern");
+    logger.warn("⚠️ Redis client is not open, cannot delete by pattern");
     return 0;
   }
 
-  let cursor: string = "0";
+  let cursor = "0";
   let totalDeleted = 0;
 
   try {
@@ -81,22 +70,17 @@ export async function deleteByPattern(pattern: string): Promise<number> {
         MATCH: pattern,
         COUNT: 100,
       });
-
       cursor = nextCursor;
-
-
       if (keys.length > 0) {
-        const deletedCount = await redisClient.del(keys);
-        totalDeleted += deletedCount;
+        totalDeleted += await redisClient.del(keys);
       }
     } while (cursor !== "0");
 
-
     return totalDeleted;
   } catch (error) {
-    console.error("❌ Error deleting Redis keys by pattern:", error);
+    logger.error({ error }, "❌ Error deleting Redis keys by pattern");
     return totalDeleted;
   }
 }
 
-export { redisClient, REDIS_KEYS };
+export { redisClient };

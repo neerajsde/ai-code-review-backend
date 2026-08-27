@@ -1,67 +1,93 @@
 import express from "express";
-import path from "node:path";
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
-import compression from 'compression';
-import rateLimit from 'express-rate-limit';
+import compression from "compression";
+import rateLimit from "express-rate-limit";
 import cors from "cors";
-import logger from "./middlewares/logger.js";
-import swaggerUi from "swagger-ui-express";
 import { ENV } from "./config/env.js";
-import { swaggerSpec } from "./config/swagger.js";
-import apiRoutes from "./routes/api.routes.js";
+import requestLogger from "./middlewares/logger.js";
 import { errorMiddleware } from "./middlewares/error.middleware.js";
-import "./workers/index.js";
+import { notFoundMiddleware } from "./middlewares/notFound.middleware.js";
+import { requestIdMiddleware } from "./middlewares/requestId.middleware.js";
+import apiRoutes from "./routes/api.routes.js";
 
 const app = express();
 
-app.use(helmet());
-app.use(logger);
-app.use(express.json());
-app.use(cookieParser());
-app.use(cors({
-  origin: ENV.ALLOWED_ORIGINS.split(","),
-  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-}));
+// ─── Security ────────────────────────────────────────────────────────────────
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "https:"],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  })
+);
 
-// Global rate limiting
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+const allowedOrigins = ENV.ALLOWED_ORIGINS.split(",").map((o) => o.trim());
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error(`CORS: origin ${origin} not allowed`));
+      }
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Request-ID"],
+    credentials: true,
+  })
+);
+
+// ─── Trust proxy ─────────────────────────────────────────────────────────────
+app.set("trust proxy", 1);
+
+// ─── Rate Limiting ────────────────────────────────────────────────────────────
 const globalRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // limit each IP to 1000 requests per windowMs
+  windowMs: ENV.RATE_LIMIT_WINDOW_MS,
+  max: ENV.RATE_LIMIT_MAX_REQUESTS,
   message: {
-    error: 'Too many requests from this IP, please try again later.'
+    success: false,
+    error: {
+      code: "RATE_LIMIT_EXCEEDED",
+      message: "Too many requests, please try again later.",
+    },
   },
   standardHeaders: true,
   legacyHeaders: false,
 });
-
-app.set("trust proxy", "127.0.0.1");
 app.use(globalRateLimit);
 
+// ─── Body Parsing ─────────────────────────────────────────────────────────────
+app.use(
+  express.json({
+    limit: "10mb",
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+app.use(cookieParser(ENV.COOKIE_SECRET));
 app.use(compression());
 
-// Swagger documentation
-app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+// ─── Request ID ───────────────────────────────────────────────────────────────
+app.use(requestIdMiddleware);
 
-const appFilePath = fileURLToPath(import.meta.url);
-const appDirPath = path.dirname(appFilePath);
-const publicDirCandidates = [
-  path.join(process.cwd(), "public"),
-  path.join(process.cwd(), "src", "public"),
-  path.join(appDirPath, "public"),
-];
-const publicDirPath = publicDirCandidates.find((dirPath) => fs.existsSync(dirPath)) || path.join(process.cwd(), "public");
-app.use("/public", express.static(publicDirPath, {
-  dotfiles: "deny",
-  etag: true,
-  index: false,
-  maxAge: "7d",
-  immutable: true
-}));
+// ─── Logging ──────────────────────────────────────────────────────────────────
+app.use(requestLogger);
+
+// ─── API Routes ───────────────────────────────────────────────────────────────
 app.use("/api/v1", apiRoutes);
+
+// ─── Error Handling ───────────────────────────────────────────────────────────
+app.use(notFoundMiddleware);
 app.use(errorMiddleware);
 
 export default app;

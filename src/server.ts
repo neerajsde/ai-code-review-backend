@@ -1,99 +1,86 @@
-import app from "./app.js";
 import http from "http";
 import chalk from "chalk";
 import os from "os";
+import app from "./app.js";
 import { ENV } from "./config/env.js";
-import {connectRedis} from "./config/redis.config.js";
-import { initSocket } from "./socket/socket.server.js";
-import { getClientIp, getDeviceInfo } from "./modules/auth/auth.service.js";
-
-const now = new Date();
-
-const day = String(now.getDate()).padStart(2, '0');
-const month = now.toLocaleString('en-IN', { month: 'long' });
-const year = now.getFullYear();
-const time = now.toLocaleTimeString('en-IN');
-
-const formattedDate = `${day} ${month} ${year}, ${time}`
-
-app.get("/", (req, res) => {
-  const device = getDeviceInfo(req);
-  const ip = getClientIp(req);
-
-  res.status(200).json({
-    success: true,
-    api: {
-      name: "ReelTube Backend API",
-      version: ENV.API_VERSION,
-      status: "running"
-    },
-    client: {
-      ip: ip,
-      device: device
-    },
-    navigation: {
-      documentation: "/docs",
-      health_check: "/health",
-    },
-    message: "🚀 Welcome to the ReelTube Backend API",
-    timestamp: formattedDate
-  });
-});
-
-app.get("/health", (req, res) => {
-  const uptime = process.uptime();
-  const memoryUsage = process.memoryUsage();
-
-  res.status(200).json({
-    status: "ok",
-    service: "ReelTube Backend API",
-    version: ENV.API_VERSION,
-    uptime: `${Math.floor(uptime)} seconds`,
-    timestamp: new Date().toISOString(),
-    server: {
-      memory: {
-        rss: memoryUsage.rss,
-        heapTotal: memoryUsage.heapTotal,
-        heapUsed: memoryUsage.heapUsed
-      },
-      node_version: process.version
-    }
-  });
-});
+import { connectMongoDB, disconnectMongoDB } from "./config/database.js";
+import { connectRedis, disconnectRedis } from "./config/redis.config.js";
+import logger from "./utils/logger.js";
 
 const server = http.createServer(app);
-initSocket(server);
 
-const port = ENV.PORT;
-const host = ENV.HOST || "127.0.0.1";
+// ─── Graceful Shutdown ───────────────────────────────────────────────────────
+let isShuttingDown = false;
 
-server.listen(port, host, () => {
-  console.clear();
-  console.log(chalk.gray("──────────────────────────────────────"));
-  console.log(
-    chalk.greenBright.bold("🚀 Server Started Successfully\n")
-  );
+async function gracefulShutdown(signal: string): Promise<void> {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
 
-  console.log(
-    `${chalk.cyan("📍 URL:")}      ${chalk.white(`http://localhost:${port}`)}`
-  );
-  console.log(
-    `${chalk.cyan("📄 DOCS:")}     ${chalk.white(`http://localhost:${port}/docs`)}`
-  );
-  console.log(
-    `${chalk.cyan("🌍 ENV:")}      ${chalk.yellow(ENV.NODE_ENV)}`
-  );
-  console.log(
-    `${chalk.cyan("🧠 Node:")}     ${process.version}`
-  );
-  console.log(
-    `${chalk.cyan("💻 Platform:")} ${os.platform()} (${os.arch()})`
-  );
-  console.log(
-    `${chalk.cyan("🕒 Time:")}     ${new Date().toLocaleString()}`
-  );
+  logger.info(`🛑 ${signal} received — shutting down gracefully`);
 
-  console.log(chalk.gray("──────────────────────────────────────"));
-});  
+  server.close(async () => {
+    try {
+      await disconnectMongoDB();
+      await disconnectRedis();
+      logger.info("✅ Graceful shutdown complete");
+      process.exit(0);
+    } catch (err) {
+      logger.error({ err }, "❌ Error during graceful shutdown");
+      process.exit(1);
+    }
+  });
 
-connectRedis();
+  // Force kill after 10s
+  setTimeout(() => {
+    logger.error("❌ Forced shutdown after timeout");
+    process.exit(1);
+  }, 10000);
+}
+
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "❌ Uncaught Exception");
+  gracefulShutdown("uncaughtException");
+});
+
+process.on("unhandledRejection", (reason) => {
+  logger.error({ reason }, "❌ Unhandled Rejection");
+  gracefulShutdown("unhandledRejection");
+});
+
+// ─── Bootstrap ───────────────────────────────────────────────────────────────
+async function bootstrap(): Promise<void> {
+  try {
+    await connectMongoDB();
+    await connectRedis();
+
+    const port = ENV.PORT;
+    const host = ENV.HOST;
+
+    server.listen(port, host, () => {
+      console.clear();
+      console.log(chalk.gray("──────────────────────────────────────"));
+      console.log(chalk.greenBright.bold("🚀 AI Code Review API Started\n"));
+      console.log(
+        `${chalk.cyan("📍 URL:")}      ${chalk.white(`http://${host}:${port}`)}`
+      );
+      console.log(
+        `${chalk.cyan("🌍 ENV:")}      ${chalk.yellow(ENV.NODE_ENV)}`
+      );
+      console.log(
+        `${chalk.cyan("🧠 Node:")}     ${process.version}`
+      );
+      console.log(
+        `${chalk.cyan("💻 Platform:")} ${os.platform()} (${os.arch()})`
+      );
+      console.log(chalk.gray("──────────────────────────────────────"));
+    });
+  } catch (error) {
+    logger.error({ error }, "❌ Failed to start server");
+    process.exit(1);
+  }
+}
+
+bootstrap();

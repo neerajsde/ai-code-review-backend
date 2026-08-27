@@ -3,7 +3,7 @@ import z from "zod";
 
 const envSchema = z.object({
   HOST: z.string().default("127.0.0.1"),
-  PORT: z.coerce.number().default(3000),
+  PORT: z.coerce.number().default(4000),
   NODE_ENV: z
     .enum(["development", "production", "test"])
     .default("development"),
@@ -12,35 +12,66 @@ const envSchema = z.object({
   API_VERSION: z.string().default("1.0.0"),
 
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(900000),
-  RATE_LIMIT_MAX_REQUESTS: z.coerce.number().default(10),
+  RATE_LIMIT_MAX_REQUESTS: z.coerce.number().default(100),
 
+  // Database
   MONGO_URI: z.string(),
 
-  REDIS_HOST: z.string(),
+  // Redis
+  REDIS_HOST: z.string().default("127.0.0.1"),
   REDIS_PORT: z.coerce.number().default(6379),
+  REDIS_URL: z.string().optional(),
 
-  EMAIL_HOST: z.string(),
-  EMAIL_PORT: z.enum(["465", "587"]),
-  EMAIL_SECURE: z.coerce.boolean().default(false),
-  EMAIL_USER: z.string(),
-  EMAIL_PASS: z.string(),
-  EMAIL_FROM: z.string(),
+  // Frontend
+  FRONTEND_URL: z.string().default("http://localhost:3000"),
+  ALLOWED_ORIGINS: z.string().default("http://localhost:3000"),
 
-  JWT_ACCESS_SECRET: z.string(),
-  JWT_ACCESS_EXPIRES_IN: z.string().default("15m"),
-  JWT_REFRESH_SECRET: z.string(),
-  JWT_REFRESH_EXPIRES_IN: z.string().default("7d"),
+  // Backend URL
+  BACKEND_URL: z.string().url().default("http://localhost:4000"),
 
-  JWT_ADMIN_ACCESS_SECRET: z.string(),
-  JWT_ADMIN_REFRESH_SECRET: z.string(),
+  // JWT
+  JWT_SECRET: z.string(),
+  JWT_EXPIRES_IN: z.string().default("7d"),
 
-  ALLOWED_ORIGINS: z.string().default("*"),
+  // Cookie / Session
+  COOKIE_SECRET: z.string(),
+  COOKIE_SECURE: z.coerce.boolean().default(false),
 
-  APP_URL: z.string(),
-  LOGO_URL: z.string(),
-  SUPPORT_EMAIL: z.string(),
+  // GitHub OAuth App credentials
+  GITHUB_CLIENT_ID: z.string(),
+  GITHUB_CLIENT_SECRET: z.string(),
 
-  BACKEND_URL: z.url(),
+  // GitHub App credentials
+  GITHUB_APP_ID: z.string(),
+  GITHUB_APP_PRIVATE_KEY: z.string(), // PEM string, newlines as \n
+  GITHUB_WEBHOOK_SECRET: z.string(),
+  GITHUB_APP_SLUG: z.string().default("ai-code-review-app"),
+
+  // AI Provider
+  AI_PROVIDER: z.enum(["openai", "gemini", "mock"]).default("mock"),
+  AI_API_KEY: z.string().optional(),
+  AI_MODEL: z.string().optional(),
+
+  // AI Cost Controls
+  MAX_FILES_PER_REVIEW: z.coerce.number().default(30),
+  MAX_FILE_SIZE_BYTES: z.coerce.number().default(100000),
+  MAX_REVIEW_TOKENS: z.coerce.number().default(100000),
+  MAX_AI_RETRIES: z.coerce.number().default(3),
+
+  // Logging
+  LOG_LEVEL: z.enum(["error", "warn", "info", "debug"]).default("info"),
 });
 
-export const ENV = envSchema.parse(process.env);
+export type Env = z.infer<typeof envSchema>;
+
+const parsed = envSchema.safeParse(process.env);
+
+if (!parsed.success) {
+  console.error(
+    "❌ Invalid environment variables:\n",
+    parsed.error.flatten().fieldErrors
+  );
+  process.exit(1);
+}
+
+export const ENV = parsed.data;
